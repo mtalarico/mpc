@@ -10,6 +10,11 @@ interface ProfilerSettings {
   filter?: Document;
 }
 
+interface ValidationResult {
+  is_atlas: boolean;
+  error: string;
+}
+
 interface Configuration {
   is_atlas: boolean;
   fixed: boolean;
@@ -18,6 +23,7 @@ interface Configuration {
   duration: number;
   mongodb_uri: string;
   db_name: string;
+  reset?: boolean;
   atlas_public_key?: string;
   atlas_private_key?: string;
   atlas_project_id?: string;
@@ -34,15 +40,15 @@ options that have [EXAMPLE] will be read via environment variables if the CLI eq
   --uri\t\t\tmongodb connection string [MONGODB_URI]\n\
   --t\t\t\ttime in MINUTES to sleep before restoring the profiler to its original settings\n\
 \noptional:\n\
-  --fixed\t\tdo not wait and restore, change the profiler to a fixed value and exit\n\
-  --db\t\t\tchange the profiler settings on a different database\n\
+  --fixed\t\tdo not wait t time before restoring settings, just set desired settings and exit\n\
+  --db\t\t\tchange the profiler settings on a different database (defaults to admin)\n\
   --slowms\t\tthe desired slowms threshold to change the profiler to\n\
-  --level\t\tthe desired level to change the profiler to (levels other than 0 can signficiantly degrade performance)\n\
+  --level\t\tthe desired level to change the profiler to (levels other than 0 can degrade performance)\n\
+  --reset\t\tchange settings back to defaults (100ms slow, unset filter, dynamic ms threshold ON for Atlas), all other parameters will be ignored\n\
 \natlas settings:\n\
-  --atlas_project_id\tthe project ID the cluster is in [ATLAS_PROJECT_ID]\n\
-  --atlas_public_key\tpublic key of API key to request dynamic slowms to be toggled [ATLAS_PUBLIC_KEY]\n\
-  --atlas_private_key\tpublic key of API key to request dynamic slowms to be toggled [ATLAS_PRIVATE_KEY]\n\
-  --help\t\tprint this menu and exit\n\
+  --atlas_project_id\tthe project ID the cluster is in [MONGODB_ATLAS_PROJECT_ID]\n\
+  --atlas_public_key\tpublic key of API key to request dynamic slowms to be toggled [MONGODB_ATLAS_PUBLIC_KEY]\n\
+  --atlas_private_key\tpublic key of API key to request dynamic slowms to be toggled [MONGODB_ATLAS_PRIVATE_KEY]\n\
 \n\
 note: sending SIGINT during sleep will still attempt to restore the profiler back to its original value\
 "
@@ -69,7 +75,7 @@ function redact_config(k: string, v: any) {
 
 function configure(): Configuration {
   const flags = parse(Deno.args, {
-    boolean: ["help", "fixed"],
+    boolean: ["help", "fixed", "reset"],
     string: [
       "uri",
       "atlas_project_id",
@@ -92,11 +98,11 @@ function configure(): Configuration {
   // the following can be provided either from the CLI or falls back to env
   const mongodb_uri = flags.uri || Deno.env.get("MONGODB_URI");
   const atlas_public_key =
-    flags.atlas_public_key || Deno.env.get("ATLAS_PUBLIC_KEY");
+    flags.atlas_public_key || Deno.env.get("MONGODB_ATLAS_PUBLIC_KEY");
   const atlas_private_key =
-    flags.atlas_private_key || Deno.env.get("ATLAS_PRIVATE_KEY");
+    flags.atlas_private_key || Deno.env.get("MONGODB_ATLAS_PRIVATE_KEY");
   const atlas_project_id =
-    flags.atlas_project_id || Deno.env.get("ATLAS_PROJECT_ID");
+    flags.atlas_project_id || Deno.env.get("MONGODB_ATLAS_PROJECT_ID");
 
   const config = {
     fixed: flags.fixed,
@@ -104,13 +110,19 @@ function configure(): Configuration {
     level: flags.level,
     duration: flags.t,
     db_name: flags.db,
+    reset: flags.reset,
     mongodb_uri,
     atlas_public_key,
     atlas_private_key,
     atlas_project_id,
   } as Configuration;
 
-  config.is_atlas = validate_input(config);
+  const res = validate_input(config);
+  if (res.error != "") {
+    log(res.error);
+    Deno.exit(1);
+  }
+  config.is_atlas = res.is_atlas;
   // print_config(config);
   log(`using configuration:\n${JSON.stringify(config, redact_config, "  ")}, `);
   return config;
@@ -122,35 +134,26 @@ interface Clients {
   groupId?: string;
 }
 
-// validate potential env -- note since we wrapped in ), null will equal "undefine"
-function validate_input(c: Configuration): boolean {
+// validate potential env -- note since we wrapped in ), null will equal "undefined"
+function validate_input(c: Configuration): ValidationResult {
+  const result: ValidationResult = { is_atlas: false, error: "" };
   if (!c.mongodb_uri) {
-    log("must provide uri for mongodb");
-    Deno.exit(1);
-  }
-  if (!c.fixed && !c.duration) {
-    log(
-      "must provide time in minutes to sleep for before restoring profiler or --fixed to change once"
-    );
-    Deno.exit(1);
+    result.error = "must provide uri for mongodb";
+    return result;
   }
   if (c.atlas_public_key && c.atlas_private_key && c.atlas_project_id) {
-    return true;
-  } else if (
-    !c.atlas_public_key &&
-    !c.atlas_private_key &&
-    !c.atlas_project_id
-  ) {
-    if (c.mongodb_uri.includes(".mongodb.net")) {
-      log(
-        "it looks like this is an atlas cluster, but no atlas credentials were provided, consider doing so to disable the dynamic slowms threshold, else profiling logs may be unreliable"
-      );
-    }
-    return false;
-  } else {
-    log("must set public key, private key and project ID to use atlas");
-    Deno.exit(1);
+    result.is_atlas = true;
+  } else if (c.mongodb_uri.includes(".mongodb.net")) {
+    result.error =
+      "this looks like an Atlas cluster, but not all Atlas credentials (public + private key, projectId) were provided";
+    return result;
   }
+  if (!c.reset && !c.fixed && !c.duration) {
+    result.error =
+      "must provide time in minutes to sleep for before restoring profiler or --fixed to change once";
+    return result;
+  }
+  return result;
 }
 
 async function init(): Promise<Clients> {
@@ -219,7 +222,7 @@ async function set_profiling_level(change: Document) {
   log(`set profiler to ${JSON.stringify(change)} on db '${config.db_name}'`);
 }
 
-async function profile_for_period() {
+async function run() {
   const old = await get_profiling_level();
 
   Deno.addSignalListener("SIGINT", async function () {
@@ -229,16 +232,27 @@ async function profile_for_period() {
     Deno.exit(1);
   });
 
+  if (config.reset) {
+    await set_profiling_level({
+      profile: 0,
+      slowms: 100,
+      sampleRate: new Double(1.0),
+      filter: "unset",
+    });
+    await set_atlas_dynamic_slowms(true);
+    return;
+  }
+
   try {
     await set_atlas_dynamic_slowms(false);
     await set_profiling_level({
       profile: config.level,
       slowms: config.slowms,
-      sample: new Double(1.0),
+      sampleRate: new Double(1.0),
       filter: "unset",
     });
     if (config.fixed) {
-      Deno.exit(0);
+      return;
     }
     const end = new Date(new Date().getTime() + config.duration * 60000);
     log(
@@ -255,5 +269,5 @@ async function profile_for_period() {
 
 const config = configure();
 const clients = await init();
-await profile_for_period();
+await run();
 Deno.exit(0);
