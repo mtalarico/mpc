@@ -48,7 +48,7 @@ options that have [EXAMPLE] will be read via environment variables if the CLI eq
 \natlas settings:\n\
   --atlas_project_id\tthe project ID the cluster is in [MONGODB_ATLAS_PROJECT_ID]\n\
   --atlas_public_key\tpublic key of API key to request dynamic slowms to be toggled [MONGODB_ATLAS_PUBLIC_KEY]\n\
-  --atlas_private_key\tpublic key of API key to request dynamic slowms to be toggled [MONGODB_ATLAS_PRIVATE_KEY]\n\
+  --atlas_private_key\tprivate key of API key to request dynamic slowms to be toggled [MONGODB_ATLAS_PRIVATE_KEY]\n\
 \n\
 note: sending SIGINT during sleep will still attempt to restore the profiler back to its original value\
 "
