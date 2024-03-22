@@ -24,7 +24,7 @@ optional:
 atlas settings:
   --atlas_project_id    the project ID the cluster is in [MONGODB_ATLAS_PROJECT_ID]
   --atlas_public_key    public key of API key to request dynamic slowms to be toggled [MONGODB_ATLAS_PUBLIC_KEY]
-  --atlas_private_key   public key of API key to request dynamic slowms to be toggled [MONGODB_ATLAS_PRIVATE_KEY]
+  --atlas_private_key   private key of API key to request dynamic slowms to be toggled [MONGODB_ATLAS_PRIVATE_KEY]
 
 note: sending SIGINT during sleep will still attempt to restore the profiler back to its original value
 ```
